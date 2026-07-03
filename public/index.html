@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>The Cooking Book</title>
+  <meta name="description" content="A personal cooking book — recipes, books, smart serving-size scaling, search and filters." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8D%B3%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand" id="homeBtn">
+      <span class="brand-mark">🍳</span>
+      <span class="brand-name">The Cooking Book</span>
+    </div>
+    <div class="search">
+      <input id="searchInput" type="search" placeholder="Search recipes, ingredients, tags…" autocomplete="off" />
+    </div>
+    <div class="topbar-actions">
+      <button class="btn ghost" id="addBookBtn">+ Book</button>
+      <button class="btn primary" id="addRecipeBtn">+ Recipe</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <section class="content" id="content"></section>
+  </main>
+
+  <div class="modal-root" id="modalRoot" aria-hidden="true"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
