@@ -51,16 +51,18 @@ npm run dev               # http://localhost:8787
 
 ## Deployment
 
-Deployment runs from GitHub Actions (`.github/workflows/deploy.yml`) because it needs
-network access to the Cloudflare API. Add two repository secrets, then push:
+Deployment is handled by **Cloudflare Workers Builds** (the repo is connected to the
+Worker via Git). Every push to the branch triggers `npx wrangler deploy` on
+Cloudflare's build runners — no API tokens or GitHub secrets required. The Worker has
+no npm dependencies, so no build step is needed.
 
-1. **`CLOUDFLARE_API_TOKEN`** — a token with *Workers Scripts: Edit*, *D1: Edit*,
-   *Workers KV Storage: Edit* and *Account: Read* permissions
-   (create at https://dash.cloudflare.com/profile/api-tokens → "Edit Cloudflare Workers" template).
-2. **`CLOUDFLARE_ACCOUNT_ID`** — your account ID (dashboard → Workers & Pages → right sidebar).
+Recommended build settings (Workers & Pages → project → Settings → Builds):
 
-Add them under **Settings → Secrets and variables → Actions**. The workflow then
-applies the D1 schema and runs `wrangler deploy` on every push to the branch.
+| Setting | Value |
+|---|---|
+| Build command | `npm install` *(optional — the Worker has no dependencies)* |
+| Deploy command | `npx wrangler deploy` |
+| Root directory | *(blank — repo root, where `wrangler.toml` lives)* |
 
 To deploy from your own machine instead:
 
