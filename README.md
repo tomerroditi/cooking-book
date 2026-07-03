@@ -18,7 +18,7 @@ Live app (after first deploy): `https://cooking-book.<your-subdomain>.workers.de
 
 | Layer      | Tech |
 |------------|------|
-| Runtime    | Cloudflare Workers ([Hono](https://hono.dev) router) |
+| Runtime    | Cloudflare Workers (zero-dependency, native `fetch` handler) |
 | Database   | Cloudflare D1 (`cooking-book-db`) |
 | Images     | Cloudflare KV (`cooking-book-images`) |
 | Frontend   | Vanilla JS SPA served via Workers Static Assets (`/public`) |

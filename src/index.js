@@ -1,14 +1,14 @@
-import { Hono } from 'hono';
+/* The Cooking Book — Cloudflare Worker (zero dependencies).
+   Serves a JSON API under /api/* and static assets for everything else. */
 
-const app = new Hono();
+/* ------------------------------ helpers ------------------------------ */
 
-/* ----------------------------- helpers ----------------------------- */
-
-const json = (c, data, status = 200) => c.json(data, status);
-const bad = (c, msg, status = 400) => c.json({ error: msg }, status);
+const json = (data, status = 200) =>
+  new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
+const bad = (msg, status = 400) => json({ error: msg }, status);
 const newId = (prefix) => `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
+const readJson = (request) => request.json().catch(() => ({}));
 
-// Round a scaled quantity to a friendly value.
 function prettyQty(n) {
   if (n === null || n === undefined) return null;
   const r = Math.round(n * 100) / 100;
@@ -41,7 +41,6 @@ async function loadRecipe(db, id, servings) {
 
   return {
     ...recipe,
-    scalable: undefined,
     baseServings: base,
     servings: target,
     scaleFactor: parseFloat(factor.toFixed(3)),
@@ -51,68 +50,60 @@ async function loadRecipe(db, id, servings) {
   };
 }
 
-/* ------------------------------ books ------------------------------ */
+/* ------------------------------- books ------------------------------- */
 
-app.get('/api/books', async (c) => {
-  const { results } = await c.env.DB.prepare(
+async function listBooks(env) {
+  const { results } = await env.DB.prepare(
     `SELECT b.*, (SELECT COUNT(*) FROM recipes r WHERE r.book_id = b.id) AS recipe_count
      FROM books b ORDER BY b.created_at DESC, b.title`
   ).all();
-  return json(c, results);
-});
+  return json(results);
+}
 
-app.post('/api/books', async (c) => {
-  const body = await c.req.json().catch(() => ({}));
-  if (!body.title || !body.title.trim()) return bad(c, 'title is required');
+async function createBook(request, env) {
+  const body = await readJson(request);
+  if (!body.title || !body.title.trim()) return bad('title is required');
   const id = newId('bk');
-  await c.env.DB.prepare(
-    'INSERT INTO books (id, title, author, description, color) VALUES (?, ?, ?, ?, ?)'
-  ).bind(id, body.title.trim(), body.author || null, body.description || null, body.color || '#e07a5f').run();
-  return json(c, { id }, 201);
-});
+  await env.DB.prepare('INSERT INTO books (id, title, author, description, color) VALUES (?, ?, ?, ?, ?)')
+    .bind(id, body.title.trim(), body.author || null, body.description || null, body.color || '#e07a5f').run();
+  return json({ id }, 201);
+}
 
-app.put('/api/books/:id', async (c) => {
-  const id = c.req.param('id');
-  const body = await c.req.json().catch(() => ({}));
-  const existing = await c.env.DB.prepare('SELECT id FROM books WHERE id = ?').bind(id).first();
-  if (!existing) return bad(c, 'book not found', 404);
-  await c.env.DB.prepare(
-    'UPDATE books SET title = COALESCE(?, title), author = ?, description = ?, color = COALESCE(?, color) WHERE id = ?'
-  ).bind(body.title ?? null, body.author ?? null, body.description ?? null, body.color ?? null, id).run();
-  return json(c, { ok: true });
-});
+async function updateBook(request, env, id) {
+  const body = await readJson(request);
+  const existing = await env.DB.prepare('SELECT id FROM books WHERE id = ?').bind(id).first();
+  if (!existing) return bad('book not found', 404);
+  await env.DB.prepare('UPDATE books SET title = COALESCE(?, title), author = ?, description = ?, color = COALESCE(?, color) WHERE id = ?')
+    .bind(body.title ?? null, body.author ?? null, body.description ?? null, body.color ?? null, id).run();
+  return json({ ok: true });
+}
 
-app.delete('/api/books/:id', async (c) => {
-  const id = c.req.param('id');
-  await c.env.DB.prepare('DELETE FROM books WHERE id = ?').bind(id).run();
-  return json(c, { ok: true });
-});
+async function deleteBook(env, id) {
+  await env.DB.prepare('DELETE FROM books WHERE id = ?').bind(id).run();
+  return json({ ok: true });
+}
 
-/* ------------------------------ meta ------------------------------- */
+/* -------------------------------- meta ------------------------------- */
 
-app.get('/api/meta', async (c) => {
+async function getMeta(env) {
   const [cuisines, categories, tags] = await Promise.all([
-    c.env.DB.prepare("SELECT DISTINCT cuisine FROM recipes WHERE cuisine IS NOT NULL AND cuisine <> '' ORDER BY cuisine").all(),
-    c.env.DB.prepare("SELECT DISTINCT category FROM recipes WHERE category IS NOT NULL AND category <> '' ORDER BY category").all(),
-    c.env.DB.prepare('SELECT name FROM tags ORDER BY name').all(),
+    env.DB.prepare("SELECT DISTINCT cuisine FROM recipes WHERE cuisine IS NOT NULL AND cuisine <> '' ORDER BY cuisine").all(),
+    env.DB.prepare("SELECT DISTINCT category FROM recipes WHERE category IS NOT NULL AND category <> '' ORDER BY category").all(),
+    env.DB.prepare('SELECT name FROM tags ORDER BY name').all(),
   ]);
-  return json(c, {
+  return json({
     cuisines: cuisines.results.map((r) => r.cuisine),
     categories: categories.results.map((r) => r.category),
     tags: tags.results.map((r) => r.name),
   });
-});
+}
 
-/* ----------------------------- recipes ----------------------------- */
+/* ------------------------------ recipes ------------------------------ */
 
-app.get('/api/recipes', async (c) => {
-  const q = (c.req.query('q') || '').trim();
-  const book = c.req.query('book');
-  const cuisine = c.req.query('cuisine');
-  const category = c.req.query('category');
-  const difficulty = c.req.query('difficulty');
-  const tag = c.req.query('tag');
-  const maxTime = parseInt(c.req.query('maxTime') || '', 10);
+async function listRecipes(env, url) {
+  const qp = url.searchParams;
+  const q = (qp.get('q') || '').trim();
+  const maxTime = parseInt(qp.get('maxTime') || '', 10);
 
   const where = [];
   const binds = [];
@@ -128,50 +119,45 @@ app.get('/api/recipes', async (c) => {
     binds.push(`%${q}%`);
   }
   const p = () => `?${binds.length + 1}`;
-  if (book) { where.push(`r.book_id = ${p()}`); binds.push(book); }
-  if (cuisine) { where.push(`r.cuisine = ${p()}`); binds.push(cuisine); }
-  if (category) { where.push(`r.category = ${p()}`); binds.push(category); }
-  if (difficulty) { where.push(`r.difficulty = ${p()}`); binds.push(difficulty); }
-  if (Number.isFinite(maxTime)) { where.push(`(COALESCE(r.prep_minutes,0) + COALESCE(r.cook_minutes,0)) <= ${p()}`); binds.push(maxTime); }
-  if (tag) {
-    where.push(`r.id IN (SELECT rt.recipe_id FROM recipe_tags rt JOIN tags t ON t.id = rt.tag_id WHERE t.name = ${p()})`);
-    binds.push(tag);
+  for (const key of ['book', 'cuisine', 'category', 'difficulty']) {
+    const v = qp.get(key);
+    if (v) { where.push(`r.${key === 'book' ? 'book_id' : key} = ${p()}`); binds.push(v); }
   }
+  if (Number.isFinite(maxTime)) { where.push(`(COALESCE(r.prep_minutes,0) + COALESCE(r.cook_minutes,0)) <= ${p()}`); binds.push(maxTime); }
+  const tag = qp.get('tag');
+  if (tag) { where.push(`r.id IN (SELECT rt.recipe_id FROM recipe_tags rt JOIN tags t ON t.id = rt.tag_id WHERE t.name = ${p()})`); binds.push(tag); }
 
   const sql = `SELECT r.*, b.title AS book_title, b.color AS book_color
     FROM recipes r JOIN books b ON b.id = r.book_id
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
     ORDER BY r.created_at DESC, r.title`;
 
-  const { results } = await c.env.DB.prepare(sql).bind(...binds).all();
+  const { results } = await env.DB.prepare(sql).bind(...binds).all();
 
-  // attach tags for each recipe (small dataset, one extra query)
-  const tagRows = await c.env.DB.prepare(
-    'SELECT rt.recipe_id, t.name FROM recipe_tags rt JOIN tags t ON t.id = rt.tag_id'
-  ).all();
+  const tagRows = await env.DB.prepare('SELECT rt.recipe_id, t.name FROM recipe_tags rt JOIN tags t ON t.id = rt.tag_id').all();
   const tagMap = {};
   for (const row of tagRows.results) (tagMap[row.recipe_id] ||= []).push(row.name);
 
-  return json(c, results.map((r) => ({
+  return json(results.map((r) => ({
     ...r,
     total_minutes: (r.prep_minutes || 0) + (r.cook_minutes || 0),
     tags: tagMap[r.id] || [],
   })));
-});
+}
 
-app.get('/api/recipes/:id', async (c) => {
-  const servings = parseInt(c.req.query('servings') || '', 10);
-  const recipe = await loadRecipe(c.env.DB, c.req.param('id'), Number.isFinite(servings) ? servings : undefined);
-  if (!recipe) return bad(c, 'recipe not found', 404);
-  return json(c, recipe);
-});
+async function getRecipe(env, id, url) {
+  const servings = parseInt(url.searchParams.get('servings') || '', 10);
+  const recipe = await loadRecipe(env.DB, id, Number.isFinite(servings) ? servings : undefined);
+  if (!recipe) return bad('recipe not found', 404);
+  return json(recipe);
+}
 
-async function upsertRecipe(c, id, isNew) {
-  const b = await c.req.json().catch(() => ({}));
-  if (!b.title || !b.title.trim()) return bad(c, 'title is required');
-  if (!b.book_id) return bad(c, 'book_id is required');
+async function upsertRecipe(request, env, id, isNew) {
+  const b = await readJson(request);
+  if (!b.title || !b.title.trim()) return bad('title is required');
+  if (!b.book_id) return bad('book_id is required');
 
-  const db = c.env.DB;
+  const db = env.DB;
   const stmts = [];
 
   if (isNew) {
@@ -194,9 +180,8 @@ async function upsertRecipe(c, id, isNew) {
   (b.ingredients || []).forEach((ing, idx) => {
     if (!ing || !ing.name || !ing.name.trim()) return;
     const qty = ing.quantity === '' || ing.quantity === null || ing.quantity === undefined ? null : Number(ing.quantity);
-    stmts.push(db.prepare(
-      'INSERT INTO ingredients (recipe_id, position, quantity, unit, name, scalable) VALUES (?,?,?,?,?,?)'
-    ).bind(id, idx, Number.isFinite(qty) ? qty : null, ing.unit || null, ing.name.trim(), ing.scalable === false ? 0 : 1));
+    stmts.push(db.prepare('INSERT INTO ingredients (recipe_id, position, quantity, unit, name, scalable) VALUES (?,?,?,?,?,?)')
+      .bind(id, idx, Number.isFinite(qty) ? qty : null, ing.unit || null, ing.name.trim(), ing.scalable === false ? 0 : 1));
   });
 
   (b.steps || []).forEach((step, idx) => {
@@ -213,56 +198,96 @@ async function upsertRecipe(c, id, isNew) {
   }
 
   await db.batch(stmts);
-  return json(c, { id }, isNew ? 201 : 200);
+  return json({ id }, isNew ? 201 : 200);
 }
 
-app.post('/api/recipes', (c) => upsertRecipe(c, newId('rc'), true));
+async function deleteRecipe(env, id) {
+  await env.DB.prepare('DELETE FROM recipes WHERE id = ?').bind(id).run();
+  return json({ ok: true });
+}
 
-app.put('/api/recipes/:id', async (c) => {
-  const id = c.req.param('id');
-  const existing = await c.env.DB.prepare('SELECT id FROM recipes WHERE id = ?').bind(id).first();
-  if (!existing) return bad(c, 'recipe not found', 404);
-  return upsertRecipe(c, id, false);
-});
+/* ------------------------------- images ------------------------------ */
 
-app.delete('/api/recipes/:id', async (c) => {
-  await c.env.DB.prepare('DELETE FROM recipes WHERE id = ?').bind(c.req.param('id')).run();
-  return json(c, { ok: true });
-});
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
-/* ------------------------------ images ----------------------------- */
-
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8 MB
-
-app.post('/api/images', async (c) => {
-  const ct = c.req.header('content-type') || 'application/octet-stream';
-  const buf = await c.req.arrayBuffer();
-  if (!buf || buf.byteLength === 0) return bad(c, 'empty image body');
-  if (buf.byteLength > MAX_IMAGE_BYTES) return bad(c, 'image too large (max 8MB)', 413);
-  if (!ct.startsWith('image/')) return bad(c, 'body must be an image/* content-type');
+async function uploadImage(request, env) {
+  const ct = request.headers.get('content-type') || 'application/octet-stream';
+  const buf = await request.arrayBuffer();
+  if (!buf || buf.byteLength === 0) return bad('empty image body');
+  if (buf.byteLength > MAX_IMAGE_BYTES) return bad('image too large (max 8MB)', 413);
+  if (!ct.startsWith('image/')) return bad('body must be an image/* content-type');
   const key = `img_${crypto.randomUUID()}`;
-  await c.env.IMAGES.put(key, buf, { metadata: { contentType: ct } });
-  return json(c, { key, url: `/api/images/${key}` }, 201);
-});
+  await env.IMAGES.put(key, buf, { metadata: { contentType: ct } });
+  return json({ key, url: `/api/images/${key}` }, 201);
+}
 
-app.get('/api/images/:key', async (c) => {
-  const key = c.req.param('key');
-  const obj = await c.env.IMAGES.getWithMetadata(key, { type: 'arrayBuffer' });
-  if (!obj || !obj.value) return c.text('not found', 404);
+async function serveImage(env, key) {
+  const obj = await env.IMAGES.getWithMetadata(key, { type: 'arrayBuffer' });
+  if (!obj || !obj.value) return new Response('not found', { status: 404 });
   return new Response(obj.value, {
     headers: {
       'content-type': obj.metadata?.contentType || 'application/octet-stream',
       'cache-control': 'public, max-age=31536000, immutable',
     },
   });
-});
+}
 
-/* --------------------------- health + SPA -------------------------- */
+/* ------------------------------- router ------------------------------ */
 
-app.get('/api/health', (c) => json(c, { ok: true, service: 'cooking-book' }));
-app.all('/api/*', (c) => bad(c, 'not found', 404));
+async function handleApi(request, env, url) {
+  const seg = url.pathname.split('/').filter(Boolean); // e.g. ['api','recipes','rc_x']
+  const method = request.method;
+  const resource = seg[1];
+  const idOrKey = seg[2] ? decodeURIComponent(seg[2]) : null;
 
-// Everything else is served from static assets (SPA).
-app.all('*', (c) => c.env.ASSETS.fetch(c.req.raw));
+  if (resource === 'health') return json({ ok: true, service: 'cooking-book' });
 
-export default app;
+  if (resource === 'books') {
+    if (!idOrKey) {
+      if (method === 'GET') return listBooks(env);
+      if (method === 'POST') return createBook(request, env);
+    } else {
+      if (method === 'PUT') return updateBook(request, env, idOrKey);
+      if (method === 'DELETE') return deleteBook(env, idOrKey);
+    }
+  }
+
+  if (resource === 'meta' && method === 'GET') return getMeta(env);
+
+  if (resource === 'recipes') {
+    if (!idOrKey) {
+      if (method === 'GET') return listRecipes(env, url);
+      if (method === 'POST') return upsertRecipe(request, env, newId('rc'), true);
+    } else {
+      if (method === 'GET') return getRecipe(env, idOrKey, url);
+      if (method === 'PUT') {
+        const existing = await env.DB.prepare('SELECT id FROM recipes WHERE id = ?').bind(idOrKey).first();
+        if (!existing) return bad('recipe not found', 404);
+        return upsertRecipe(request, env, idOrKey, false);
+      }
+      if (method === 'DELETE') return deleteRecipe(env, idOrKey);
+    }
+  }
+
+  if (resource === 'images') {
+    if (!idOrKey && method === 'POST') return uploadImage(request, env);
+    if (idOrKey && method === 'GET') return serveImage(env, idOrKey);
+  }
+
+  return bad('not found', 404);
+}
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    if (url.pathname.startsWith('/api/')) {
+      try {
+        return await handleApi(request, env, url);
+      } catch (err) {
+        return json({ error: err?.message || 'server error' }, 500);
+      }
+    }
+    // Everything else: static assets (SPA fallback handled by wrangler config).
+    return env.ASSETS.fetch(request);
+  },
+};

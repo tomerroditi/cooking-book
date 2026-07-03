@@ -12,9 +12,6 @@
     "db:schema:remote": "wrangler d1 execute cooking-book-db --remote --file=./db/schema.sql",
     "db:seed:remote": "wrangler d1 execute cooking-book-db --remote --file=./db/seed.sql"
   },
-  "dependencies": {
-    "hono": "^4.6.14"
-  },
   "devDependencies": {
     "wrangler": "^4.107.0"
   }
